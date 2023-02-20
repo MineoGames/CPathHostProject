@@ -176,13 +176,13 @@ public:
 	// Returns the child with this tree id, or his parent at DepthReached in case the child doesnt exist
 	CPathOctree* FindTreeByID(uint32 TreeID, uint32& DepthReached);
 
-	inline CPathOctree* FindTreeByID(uint32 TreeID);
+	CPathOctree* FindTreeByID(uint32 TreeID);
 
 	// Returns a tree and its TreeID by world location, returns null if location outside of volume. Only for Outer index
 	CPathOctree* FindTreeByWorldLocation(FVector WorldLocation, uint32& TreeID);
 
 	// Returns a leaf and its TreeID by world location, returns null if location outside of volume. 
-	inline CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
+	CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
 
 	// Returns a free leaf and its TreeID by world location, as long as it exists in provided search range and WorldLocation is in this Volume
 	// If SearchRange <= 0, it uses a default dynamic search range
@@ -199,36 +199,36 @@ public:
 	std::vector<CPathAStarNode> FindFreeNeighbourLeafs(CPathAStarNode& Node);
 
 	// Returns a parent of tree with given TreeID or null if TreeID has depth of 0
-	inline CPathOctree* GetParentTree(uint32 TreeId);
+	CPathOctree* GetParentTree(uint32 TreeId);
 
 	// Returns world location of a voxel at this TreeID. This returns CENTER of the voxel
-	inline FVector WorldLocationFromTreeID(uint32 TreeID) const;
+	FVector WorldLocationFromTreeID(uint32 TreeID) const;
 
-	inline FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const;
+	FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const;
 
 	// Creates TreeID for AsyncOverlapByChannel
-	inline uint32 CreateTreeID(uint32 Index, uint32 Depth) const;
+	uint32 CreateTreeID(uint32 Index, uint32 Depth) const;
 
 	// Extracts Octrees array index from TreeID
-	inline uint32 ExtractOuterIndex(uint32 TreeID) const;
+	uint32 ExtractOuterIndex(uint32 TreeID) const;
 
 	// Replaces Depth in the TreeID with NewDepth
-	inline void ReplaceDepth(uint32& TreeID, uint32 NewDepth);
+	void ReplaceDepth(uint32& TreeID, uint32 NewDepth);
 
 	// Extracts depth from TreeID
-	inline uint32 ExtractDepth(uint32 TreeID) const;
+	uint32 ExtractDepth(uint32 TreeID) const;
 
 	// Returns a number from  0 to 7 - a child index at requested Depth
-	inline uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const;
+	uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const;
 
 	// This assumes that child index at Depth is 000, if its not use ReplaceChildIndex
-	inline void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
 
 	// Replaces child index at given depth
-	inline void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
 
 	// Replaces child index at given depth and also replaces depth to the same one
-	inline void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
 
 	// Traverses the tree downwards and adds every tree to the container
 	void GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container);
@@ -247,7 +247,7 @@ public:
 
 	// ----------- Other helper functions ---------------------
 
-	inline float GetVoxelSizeByDepth(int Depth) const;
+	float GetVoxelSizeByDepth(int Depth) const;
 
 	// Draws the voxel, this takes all the drawing options into condition. If Duraiton is below 0, it never disappears. 
 	// If Color = green, free trees are green and occupied are red.
@@ -259,19 +259,19 @@ public:
 protected:
 
 	// Returns an index in the Octree array from world position. NO BOUNDS CHECK
-	inline int WorldLocationToIndex(FVector WorldLocation) const;
+	int WorldLocationToIndex(FVector WorldLocation) const;
 
 	// Multiplies local integer coordinates into index
-	inline float LocalCoordsInt3ToIndex(FVector V) const;
+	float LocalCoordsInt3ToIndex(FVector V) const;
 
 	// Returns the X Y and Z relative to StartPosition and divided by VoxelSize. Multiply them to get the index. NO BOUNDS CHECK
-	inline FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
+	FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
 
 	// Returns world location of a tree at depth 0. Extracts only outer index from TreeID
-	inline FVector GetOuterTreeWorldLocation(uint32 TreeID) const;
+	FVector GetOuterTreeWorldLocation(uint32 TreeID) const;
 
 	// takes in what `WorldLocationToLocalCoordsInt3` returns and performs a bounds check
-	inline bool IsInBounds(FVector LocalCoordsInt3) const;
+	bool IsInBounds(FVector LocalCoordsInt3) const;
 
 	// Helper function for 'FindLeafByWorldLocation'. Relative location is location relative to the middle of CurrentTree
 	CPathOctree* FindLeafRecursive(FVector RelativeLocation, uint32& TreeID, uint32 CurrentDepth, CPathOctree* CurrentTree);
@@ -314,7 +314,7 @@ protected:
 
 	bool ThreadIDs[64];
 
-	inline uint32 GetFreeThreadID() const;
+	uint32 GetFreeThreadID() const;
 
 
 	// ----- Lookup tables-------

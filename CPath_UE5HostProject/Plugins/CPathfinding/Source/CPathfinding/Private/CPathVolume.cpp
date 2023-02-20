@@ -306,7 +306,7 @@ void ACPathVolume::BeginDestroy()
 }
 
 
-inline FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocation) const
+FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocation) const
 {
 	FVector RelativePos = WorldLocation - StartPosition;
 	RelativePos = RelativePos / GetVoxelSizeByDepth(0);
@@ -316,13 +316,13 @@ inline FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocatio
 
 }
 
-inline int ACPathVolume::WorldLocationToIndex(FVector WorldLocation) const
+int ACPathVolume::WorldLocationToIndex(FVector WorldLocation) const
 {
 	FVector XYZ = WorldLocationToLocalCoordsInt3(WorldLocation);
 	return LocalCoordsInt3ToIndex(XYZ);
 }
 
-inline bool ACPathVolume::IsInBounds(FVector XYZ) const
+bool ACPathVolume::IsInBounds(FVector XYZ) const
 {
 	if (XYZ.X < 0 || XYZ.X >= NodeCount[0])
 		return false;
@@ -336,12 +336,12 @@ inline bool ACPathVolume::IsInBounds(FVector XYZ) const
 	return true;
 }
 
-inline float ACPathVolume::LocalCoordsInt3ToIndex(FVector V) const
+float ACPathVolume::LocalCoordsInt3ToIndex(FVector V) const
 {
 	return (V.X * (NodeCount[1] * NodeCount[2])) + (V.Y * NodeCount[2]) + V.Z;
 }
 
-inline float ACPathVolume::GetVoxelSizeByDepth(int Depth) const
+float ACPathVolume::GetVoxelSizeByDepth(int Depth) const
 {
 #if WITH_EDITOR
 	checkf(Depth <= OctreeDepth, TEXT("CPATH - Graph Generation:::DEPTH was higher than OctreeDepth"));
@@ -350,7 +350,7 @@ inline float ACPathVolume::GetVoxelSizeByDepth(int Depth) const
 	return LookupTable_VoxelSizeByDepth[Depth];
 }
 
-inline uint32 ACPathVolume::CreateTreeID(uint32 Index, uint32 Depth) const
+uint32 ACPathVolume::CreateTreeID(uint32 Index, uint32 Depth) const
 {
 #if WITH_EDITOR
 	checkf(Depth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -360,12 +360,12 @@ inline uint32 ACPathVolume::CreateTreeID(uint32 Index, uint32 Depth) const
 	return Index;
 }
 
-inline uint32 ACPathVolume::ExtractOuterIndex(uint32 TreeID) const
+uint32 ACPathVolume::ExtractOuterIndex(uint32 TreeID) const
 {
 	return TreeID & DEPTH_0_MASK;
 }
 
-inline void ACPathVolume::ReplaceDepth(uint32& TreeID, uint32 NewDepth)
+void ACPathVolume::ReplaceDepth(uint32& TreeID, uint32 NewDepth)
 {
 #if WITH_EDITOR
 	checkf(NewDepth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -375,12 +375,12 @@ inline void ACPathVolume::ReplaceDepth(uint32& TreeID, uint32 NewDepth)
 	TreeID |= NewDepth << DEPTH_0_BITS;
 }
 
-inline uint32 ACPathVolume::ExtractDepth(uint32 TreeID) const
+uint32 ACPathVolume::ExtractDepth(uint32 TreeID) const
 {
 	return (TreeID & DEPTH_MASK) >> DEPTH_0_BITS;
 }
 
-inline uint32 ACPathVolume::ExtractChildIndex(uint32 TreeID, uint32 Depth) const
+uint32 ACPathVolume::ExtractChildIndex(uint32 TreeID, uint32 Depth) const
 {
 #if WITH_EDITOR
 	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -391,7 +391,7 @@ inline uint32 ACPathVolume::ExtractChildIndex(uint32 TreeID, uint32 Depth) const
 	return (TreeID & Mask) >> DepthOffset;
 }
 
-inline void ACPathVolume::AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+void ACPathVolume::AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
 {
 #if WITH_EDITOR
 	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -403,7 +403,7 @@ inline void ACPathVolume::AddChildIndex(uint32& TreeID, uint32 Depth, uint32 Chi
 	TreeID |= ChildIndex;
 }
 
-inline FVector ACPathVolume::WorldLocationFromTreeID(uint32 TreeID) const
+FVector ACPathVolume::WorldLocationFromTreeID(uint32 TreeID) const
 {
 	uint32 OuterIndex = ExtractOuterIndex(TreeID);
 	uint32 Depth = ExtractDepth(TreeID);
@@ -418,14 +418,14 @@ inline FVector ACPathVolume::WorldLocationFromTreeID(uint32 TreeID) const
 	return CurrPosition;
 }
 
-inline FVector ACPathVolume::LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const
+FVector ACPathVolume::LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const
 {
 	uint32 X = OuterIndex / (NodeCount[1] * NodeCount[2]);
 	OuterIndex -= X * NodeCount[1] * NodeCount[2];
 	return FVector(X, OuterIndex / NodeCount[2], OuterIndex % NodeCount[2]);
 }
 
-inline void ACPathVolume::ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+void ACPathVolume::ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
 {
 #if WITH_EDITOR
 	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -441,7 +441,7 @@ inline void ACPathVolume::ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32
 	TreeID |= ChildIndex;
 }
 
-inline void ACPathVolume::ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+void ACPathVolume::ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
 {
 #if WITH_EDITOR
 	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
@@ -458,7 +458,7 @@ inline void ACPathVolume::ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth
 	ReplaceDepth(TreeID, Depth);
 }
 
-inline void ACPathVolume::GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container)
+void ACPathVolume::GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container)
 {
 	uint32 Depth = 0;
 	CPathOctree* Tree = FindTreeByID(TreeID, Depth);
@@ -480,7 +480,7 @@ void ACPathVolume::GetAllSubtreesRec(uint32 TreeID, CPathOctree* Tree, std::vect
 	}
 }
 
-inline CPathOctree* ACPathVolume::FindTreeByID(uint32 TreeID)
+CPathOctree* ACPathVolume::FindTreeByID(uint32 TreeID)
 {
 	uint32 Depth = ExtractDepth(TreeID);
 	CPathOctree* CurrTree = &Octrees[ExtractOuterIndex(TreeID)];
@@ -529,7 +529,7 @@ CPathOctree* ACPathVolume::FindTreeByWorldLocation(FVector WorldLocation, uint32
 	return &Octrees[TreeID];
 }
 
-inline CPathOctree* ACPathVolume::FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree)
+CPathOctree* ACPathVolume::FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree)
 {
 	CPathOctree* CurrentTree = FindTreeByWorldLocation(WorldLocation, TreeID);
 	CPathOctree* FoundLeaf = nullptr;
@@ -725,7 +725,7 @@ FVector ACPathVolume::GetOuterTreeWorldLocation(uint32 TreeID) const
 	return StartPosition + LocalCoords;
 }
 
-inline CPathOctree* ACPathVolume::GetParentTree(uint32 TreeId)
+CPathOctree* ACPathVolume::GetParentTree(uint32 TreeId)
 {
 	uint32 Depth = ExtractDepth(TreeId);
 	if (Depth)
@@ -892,7 +892,7 @@ void ACPathVolume::FindLeafsOnSide(CPathOctree* Tree, uint32 TreeID, ENeighbourD
 
 
 
-inline uint32 ACPathVolume::GetFreeThreadID() const
+uint32 ACPathVolume::GetFreeThreadID() const
 {
 	for (int ID = 0; ID < 64; ID++)
 	{
