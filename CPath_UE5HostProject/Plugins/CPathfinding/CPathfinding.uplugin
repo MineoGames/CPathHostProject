@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 3,
-	"VersionName": "1.03",
+	"Version": 4,
+	"VersionName": "1.031",
 	"FriendlyName": "CPathfinding",
 	"Description": "This plugin lets you find paths in space between two locations. For detailed info, please refer to the documentation.",
 	"Category": "AI",
@@ -10,7 +10,7 @@
 	"DocsURL": "https://docs.google.com/document/d/1j3NQCgR5H0Uz8qd1RfNvZPzvJEcxNIapOkz0MESesWY/edit?usp=sharing",
 	"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/c533ad0234c540fb81bdfa7bd55d3514",
 	"SupportURL": "",
-	"EngineVersion": "5.0.0",
+	"EngineVersion": "5.4.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [

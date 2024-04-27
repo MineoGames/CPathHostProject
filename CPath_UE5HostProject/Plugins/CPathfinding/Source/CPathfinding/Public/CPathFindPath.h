@@ -5,8 +5,8 @@
 
 #include "CoreMinimal.h"
 #include "CPathNode.h"
-#include "Core/Public/HAL/Runnable.h"
-#include "Core/Public/HAL/RunnableThread.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include <atomic>
 #include <vector>
@@ -44,9 +44,19 @@ public:
 
 protected:
 
-	inline float EucDistance(CPathAStarNode& Node, FVector TargetWorldLocation) const;
+	FORCEINLINE float EucDistance(CPathAStarNode& Node, FVector TargetWorldLocation) const
+	{
+		return FVector::Distance(Node.WorldLocation, TargetWorldLocation);
+	}
 
-	inline void CalcFitness(CPathAStarNode& Node);
+	FORCEINLINE void CalcFitness(CPathAStarNode& Node)
+	{
+		if (Node.PreviousNode)
+		{
+			Node.DistanceSoFar = Node.PreviousNode->DistanceSoFar + EucDistance(*Node.PreviousNode, Node.WorldLocation);
+		}
+		Node.FitnessResult = Node.DistanceSoFar + 3.5f * EucDistance(Node, TargetLocation);
+	}
 
 
 private:
@@ -54,10 +64,10 @@ private:
 	ACPathVolume* CurrentVolumeRef;
 
 	// Sweeps from Start to End using the tracing shape from volume. Returns true if no obstacles
-	inline bool CanSkip(FVector Start, FVector End);
+	bool CanSkip(FVector Start, FVector End);
 
 	// Iterates over the path from end to start, removing every other node if CanSkip returns true
-	inline void SmoothenPath(CPathAStarNode* PathEndNode);
+	void SmoothenPath(CPathAStarNode* PathEndNode);
 
 	// Removes nodes in (nearly)straight sections, transforms to Blueprint exposed struct, optionally reverses it so that the path is from start to end and returns raw nodes.
 	void TransformToUserPath(CPathAStarNode* PathEndNode, TArray<FCPathNode>& UserPath, bool bReverse = true);

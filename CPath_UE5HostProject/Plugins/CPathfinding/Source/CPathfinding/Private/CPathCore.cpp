@@ -126,7 +126,7 @@ FCPathfindingThread* ACPathCore::CreateThread(int ThreadIndex)
 	return FRunnableInstance;
 }
 
-inline void ACPathCore::AssignAsyncRequest(FCPathRequest& Request)
+void ACPathCore::AssignAsyncRequest(FCPathRequest& Request)
 {
 	int LeastBusyThread = 0;
 	int LeastTaskCount = MAX_int32;

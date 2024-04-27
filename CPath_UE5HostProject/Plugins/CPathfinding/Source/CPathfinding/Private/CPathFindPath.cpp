@@ -260,21 +260,9 @@ void CPathAStar::TransformToUserPath(CPathAStarNode* PathEndNode, TArray<FCPathN
 
 }
 
-float CPathAStar::EucDistance(CPathAStarNode& Node, FVector Target) const
-{
-	return FVector::Distance(Node.WorldLocation, Target);
-}
 
-void CPathAStar::CalcFitness(CPathAStarNode& Node)
-{
-	if (Node.PreviousNode)
-	{
-		Node.DistanceSoFar = Node.PreviousNode->DistanceSoFar + EucDistance(*Node.PreviousNode, Node.WorldLocation);
-	}
-	Node.FitnessResult = Node.DistanceSoFar + 3.5f * EucDistance(Node, TargetLocation);
-}
 
-inline bool CPathAStar::CanSkip(FVector Start, FVector End)
+bool CPathAStar::CanSkip(FVector Start, FVector End)
 {
 	FHitResult HitResult;
 	CurrentVolumeRef->GetWorld()->SweepSingleByChannel(HitResult, Start, End, FQuat(FRotator(0, 0, 0)), CurrentVolumeRef->TraceChannel, CurrentVolumeRef->TraceShapesByDepth.back().back());

@@ -97,6 +97,8 @@ struct CPATHFINDING_API FCPathResult
 {
 	GENERATED_BODY()
 
+	friend class FCPathfindingThread;
+
 	ECPathfindingFailReason FailReason = Unknown;
 	float SearchDuration = 0;
 

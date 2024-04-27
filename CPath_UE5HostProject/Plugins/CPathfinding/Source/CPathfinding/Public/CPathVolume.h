@@ -251,13 +251,13 @@ public:
 	// Returns the child with this tree id, or his parent at DepthReached in case the child doesnt exist
 	CPathOctree* FindTreeByID(uint32 TreeID, uint32& DepthReached);
 
-	inline CPathOctree* FindTreeByID(uint32 TreeID);
+	CPathOctree* FindTreeByID(uint32 TreeID);
 
 	// Returns a tree and its TreeID by world location, returns null if location outside of volume. Only for Outer index
 	CPathOctree* FindTreeByWorldLocation(FVector WorldLocation, uint32& TreeID);
 
 	// Returns a leaf and its TreeID by world location, returns null if location outside of volume. 
-	inline CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
+	CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
 
 	// Returns a free leaf and its TreeID by world location, as long as it exists in provided search range and WorldLocation is in this Volume
 	// If SearchRange <= 0, it uses a default dynamic search range
@@ -274,36 +274,113 @@ public:
 	std::vector<CPathAStarNode> FindFreeNeighbourLeafs(CPathAStarNode& Node);
 
 	// Returns a parent of tree with given TreeID or null if TreeID has depth of 0
-	inline CPathOctree* GetParentTree(uint32 TreeId);
+	FORCEINLINE CPathOctree* GetParentTree(uint32 TreeId)
+	{
+		uint32 Depth = ExtractDepth(TreeId);
+		if (Depth)
+		{
+			ReplaceDepth(TreeId, Depth - 1);
+			return FindTreeByID(TreeId, Depth);
+		}
+		return nullptr;
+	};
 
 	// Returns world location of a voxel at this TreeID. This returns CENTER of the voxel
-	inline FVector WorldLocationFromTreeID(uint32 TreeID) const;
+	FORCEINLINE FVector WorldLocationFromTreeID(uint32 TreeID) const
+	{
+		uint32 OuterIndex = ExtractOuterIndex(TreeID);
+		uint32 Depth = ExtractDepth(TreeID);
 
-	inline FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const;
+		FVector CurrPosition = StartPosition + GetVoxelSizeByDepth(0) * LocalCoordsInt3FromOuterIndex(OuterIndex);
+
+		for (uint32 CurrDepth = 1; CurrDepth <= Depth; CurrDepth++)
+		{
+			CurrPosition += GetVoxelSizeByDepth(CurrDepth) * 0.5f * LookupTable_ChildPositionOffsetMaskByIndex[ExtractChildIndex(TreeID, CurrDepth)];
+		}
+
+		return CurrPosition;
+	}
+
+	FORCEINLINE FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const
+	{
+		uint32 X = OuterIndex / (NodeCount[1] * NodeCount[2]);
+		OuterIndex -= X * NodeCount[1] * NodeCount[2];
+		return FVector(X, OuterIndex / NodeCount[2], OuterIndex % NodeCount[2]);
+	};
 
 	// Creates TreeID for AsyncOverlapByChannel
-	inline uint32 CreateTreeID(uint32 Index, uint32 Depth) const;
+	FORCEINLINE uint32 CreateTreeID(uint32 Index, uint32 Depth) const
+	{
+		checkf(Depth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		Index |= Depth << DEPTH_0_BITS;
+		return Index;
+	}
 
 	// Extracts Octrees array index from TreeID
-	inline uint32 ExtractOuterIndex(uint32 TreeID) const;
+	FORCEINLINE uint32 ExtractOuterIndex(uint32 TreeID) const
+	{
+		return TreeID & DEPTH_0_MASK;
+	}
 
 	// Replaces Depth in the TreeID with NewDepth
-	inline void ReplaceDepth(uint32& TreeID, uint32 NewDepth);
+	FORCEINLINE void ReplaceDepth(uint32& TreeID, uint32 NewDepth)
+	{
+		checkf(NewDepth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		TreeID &= ~DEPTH_MASK;
+		TreeID |= NewDepth << DEPTH_0_BITS;
+	}
 
 	// Extracts depth from TreeID
-	inline uint32 ExtractDepth(uint32 TreeID) const;
+	FORCEINLINE uint32 ExtractDepth(uint32 TreeID) const
+	{
+		return (TreeID & DEPTH_MASK) >> DEPTH_0_BITS;
+	}
 
 	// Returns a number from  0 to 7 - a child index at requested Depth
-	inline uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const;
+	FORCEINLINE uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+		uint32 Mask = 0x00000007 << DepthOffset;
+		return (TreeID & Mask) >> DepthOffset;
+	}
 
 	// This assumes that child index at Depth is 000, if its not use ReplaceChildIndex
-	inline void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		ChildIndex <<= (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+		TreeID |= ChildIndex;
+	};
 
 	// Replaces child index at given depth
-	inline void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+
+		// Clearing previous child index
+		TreeID &= ~(0x00000007 << DepthOffset);
+		ChildIndex <<= DepthOffset;
+		TreeID |= ChildIndex;
+	}
+
 
 	// Replaces child index at given depth and also replaces depth to the same one
-	inline void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+
+		// Clearing previous child index
+		TreeID &= ~(0x00000007 << DepthOffset);
+		ChildIndex <<= DepthOffset;
+		TreeID |= ChildIndex;
+		ReplaceDepth(TreeID, Depth);
+	}
 
 	// Traverses the tree downwards and adds every tree to the container
 	void GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container);
@@ -326,7 +403,11 @@ public:
 
 	// ----------- Other helper functions ---------------------
 
-	inline float GetVoxelSizeByDepth(int Depth) const;
+	FORCEINLINE float GetVoxelSizeByDepth(int Depth) const
+	{
+		checkf(Depth <= OctreeDepth, TEXT("CPATH - Graph Generation:::DEPTH was higher than OctreeDepth"));
+		return LookupTable_VoxelSizeByDepth[Depth];
+	}
 
 	// Draws the voxel, this takes all the drawing options into condition. If Duraiton is below 0, it never disappears. 
 	// If Color = green, free trees are green and occupied are red.
@@ -337,19 +418,31 @@ public:
 protected:
 
 	// Returns an index in the Octree array from world position. NO BOUNDS CHECK
-	inline int WorldLocationToIndex(FVector WorldLocation) const;
+	FORCEINLINE int WorldLocationToIndex(FVector WorldLocation) const
+	{
+		FVector XYZ = WorldLocationToLocalCoordsInt3(WorldLocation);
+		return LocalCoordsInt3ToIndex(XYZ);
+	}
 
 	// Multiplies local integer coordinates into index
-	inline float LocalCoordsInt3ToIndex(FVector V) const;
+	FORCEINLINE float LocalCoordsInt3ToIndex(FVector V) const
+	{
+		return (V.X * (NodeCount[1] * NodeCount[2])) + (V.Y * NodeCount[2]) + V.Z;
+	}
 
 	// Returns the X Y and Z relative to StartPosition and divided by VoxelSize. Multiply them to get the index. NO BOUNDS CHECK
-	inline FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
+	FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
 
 	// Returns world location of a tree at depth 0. Extracts only outer index from TreeID
-	inline FVector GetOuterTreeWorldLocation(uint32 TreeID) const;
+	FORCEINLINE FVector GetOuterTreeWorldLocation(uint32 TreeID) const
+	{
+		FVector LocalCoords = LocalCoordsInt3FromOuterIndex(ExtractOuterIndex(TreeID));
+		LocalCoords *= GetVoxelSizeByDepth(0);
+		return StartPosition + LocalCoords;
+	}
 
 	// takes in what `WorldLocationToLocalCoordsInt3` returns and performs a bounds check
-	inline bool IsInBounds(FVector LocalCoordsInt3) const;
+	bool IsInBounds(FVector LocalCoordsInt3) const;
 
 	// Helper function for 'FindLeafByWorldLocation'. Relative location is location relative to the middle of CurrentTree
 	CPathOctree* FindLeafRecursive(FVector RelativeLocation, uint32& TreeID, uint32 CurrentDepth, CPathOctree* CurrentTree);
@@ -392,7 +485,7 @@ protected:
 
 	bool ThreadIDs[64];
 
-	inline uint32 GetFreeThreadID() const;
+	uint32 GetFreeThreadID() const;
 
 	void PerformRandomBenchmark(uint32 UserData = 0, float TimeLimit = 0.2);
 

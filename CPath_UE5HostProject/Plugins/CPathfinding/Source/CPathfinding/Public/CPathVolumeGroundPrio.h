@@ -18,7 +18,7 @@ public:
 
 	virtual bool RecheckOctreeAtDepth(CPathOctree* OctreeRef, FVector TreeLocation, uint32 Depth);
 
-	inline bool ExtractIsGroundFromData(uint32 TreeUserData)
+	FORCEINLINE bool ExtractIsGroundFromData(uint32 TreeUserData)
 	{
 		return TreeUserData & 0x00000002;
 	}
