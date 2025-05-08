@@ -2,11 +2,10 @@
 
 #pragma once
 
-
 #include "CoreMinimal.h"
 #include "CPathNode.h"
-#include "Core/Public/HAL/Runnable.h"
-#include "Core/Public/HAL/RunnableThread.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
 #include <atomic>
 #include <CPathNode.h>
@@ -14,7 +13,6 @@
 #include <memory>
 #include <CPathDefines.h>
 #include "CPathFindPath.generated.h"
-
 
 class ACPathVolume;
 
@@ -53,7 +51,7 @@ public:
 
 	// Cached FindPath parameters
 	FVector PathStart, PathEnd;
-	uint32 Smoothing = 2; 
+	uint32 Smoothing = 2;
 	int32 UsrData = 0;
 	float SearchTimeLimit = 1.f / 200.f;
 
@@ -82,9 +80,7 @@ private:
 
 	friend class UCPathAsyncFindPath;
 	friend class FCPathRunnableFindPath;
-
 };
-
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FResponseDelegate, const TArray<FCPathNode>&, Path, TEnumAsByte<ECPathfindingFailReason>, FailReason);
 
@@ -98,10 +94,10 @@ class CPATHFINDING_API UCPathAsyncFindPath : public UBlueprintAsyncActionBase
 
 public:
 	UPROPERTY(BlueprintAssignable)
-		FResponseDelegate Success;
+	FResponseDelegate Success;
 
 	UPROPERTY(BlueprintAssignable)
-		FResponseDelegate Failure;
+	FResponseDelegate Failure;
 
 	// On success, returns a path from Start to End location. Both start and end must be inside the given Volume.
 	// If start or end is unreachable (or time limit was exceeded) returns nothing.
@@ -109,7 +105,7 @@ public:
 	// With SmoothingPasses=0, the path will be very jagged since the graph is Discrete.
 	// With SmoothingPasses > 2 there is a potential loss of data, especially if a custom Cost function is used.
 	UFUNCTION(BlueprintCallable, Category = CPath, meta = (BlueprintInternalUseOnly = "true"))
-		static UCPathAsyncFindPath* FindPathAsync(class ACPathVolume* Volume, FVector StartLocation, FVector EndLocation, int SmoothingPasses = 2, int32 UserData = 0, float TimeLimit = 0.2f);
+	static UCPathAsyncFindPath* FindPathAsync(class ACPathVolume* Volume, FVector StartLocation, FVector EndLocation, int SmoothingPasses = 2, int32 UserData = 0, float TimeLimit = 0.2f);
 
 	virtual void Activate() override;
 	virtual void BeginDestroy() override;

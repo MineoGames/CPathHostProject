@@ -3,19 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Core/Public/HAL/Runnable.h"
-#include "Core/Public/HAL/RunnableThread.h"
+#include "HAL/Runnable.h"
+#include "HAL/RunnableThread.h"
 
 class ACPathVolume;
 class CPathOctree;
 
-
-
-
 class CPATHFINDING_API FCPathAsyncVolumeGenerator : public FRunnable
 {
-
-
 public:
 	// Geneated trees in range Start(inclusive) - End(not inclusive). If Obstacles = true, it takes from Volume->TreesToRegenerate, if not, it takes from Volume->Octrees (default)
 	FCPathAsyncVolumeGenerator(ACPathVolume* Volume, uint32 StartIndex, uint32 EndIndex, uint8 ThreadID, FString ThreadName, bool Obstacles = false);
@@ -47,7 +42,6 @@ public:
 
 	uint32 OctreeCountAtDepth[4] = { 0, 0, 0, 0 };
 
-
 protected:
 
 	ACPathVolume* VolumeRef;
@@ -60,7 +54,5 @@ protected:
 	// Gets called by RefreshTree. Returns true if ANY child is free
 	bool RefreshTreeRec(CPathOctree* OctreeRef, uint32 Depth, FVector TreeLocation);
 
-
 public:
-
 };
