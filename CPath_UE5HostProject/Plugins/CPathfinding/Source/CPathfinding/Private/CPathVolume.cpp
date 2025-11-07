@@ -8,9 +8,13 @@
 #include <deque>
 #include <list>
 #include <unordered_set>
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "CPathDynamicObstacle.h"
 #include "CPathNode.h"
 #include "TimerManager.h"
+#include "CPathFindPath.h"
+#include "CPathCore.h"
 #include "Engine/Selection.h"
 #include "GenericPlatform/GenericPlatformAtomics.h"
 
@@ -191,6 +195,13 @@ void ACPathVolume::BeginPlay()
 	Super::BeginPlay();
 
 	VolumeBox->SetCollisionResponseToChannel(TraceChannel, ECR_Ignore);
+	GenerationFinishedSemaphore = FGenericPlatformProcess::GetSynchEventFromPool();
+
+	if (!ACPathCore::DoesInstanceExist()) 
+	{
+		ACPathCore::EnableNewInstanceCreation();
+	}
+	CoreInstance = ACPathCore::GetInstance(GetWorld());
 
 	if (GenerateOnBeginPlay)
 		GenerateGraph();
@@ -203,7 +214,7 @@ bool ACPathVolume::GenerateGraph()
 
 	UBoxComponent* tempBox = Cast<UBoxComponent>(GetRootComponent());
 	tempBox->UpdateOverlaps();
-
+	
 
 	float Divider = VoxelSize * FMath::Pow(2.f, OctreeDepth);
 
@@ -229,10 +240,13 @@ bool ACPathVolume::GenerateGraph()
 			{
 			case Capsule:
 				TraceShapesByDepth.back().push_back(FCollisionShape::MakeCapsule(AgentRadius, AgentHalfHeight));
+				break;
 			case Box:
 				TraceShapesByDepth.back().push_back(FCollisionShape::MakeBox(FVector(AgentRadius, AgentRadius, AgentHalfHeight)));
+				break;
 			case Sphere:
 				TraceShapesByDepth.back().push_back(FCollisionShape::MakeSphere(AgentRadius));
+				break;
 			default:
 				break;
 			}
@@ -254,7 +268,7 @@ bool ACPathVolume::GenerateGraph()
 		ThreadCount = FPlatformMisc::NumberOfCores() - 1;*/
 	if (MaxGenerationThreads <= 0)
 		MaxGenerationThreads = FPlatformMisc::NumberOfCores() - 1;
-
+	
 	MaxGenerationThreads = FMath::Min(MaxGenerationThreads, 31);
 
 	uint32 NodesPerThread = OuterNodeCount / MaxGenerationThreads;
@@ -272,7 +286,7 @@ bool ACPathVolume::GenerateGraph()
 			LastIndex += OuterNodeCount % MaxGenerationThreads;
 
 		int ThreadID = GetFreeThreadID();
-		FString ThreadName = "CPathGenerator Initial, ID: ";
+		FString ThreadName = FCPathAsyncVolumeGenerator::GetNameFromID(ThreadID);
 		ThreadName.AppendInt(ThreadID);
 		GeneratorThreads.push_back(std::make_unique<FCPathAsyncVolumeGenerator>(this, NodesPerThread * CurrentThread, LastIndex, ThreadID, ThreadName));
 		GeneratorThreads.back()->ThreadRef = FRunnableThread::Create(GeneratorThreads.back().get(), *ThreadName);
@@ -295,18 +309,120 @@ bool ACPathVolume::GenerateGraph()
 void ACPathVolume::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+#if WITH_EDITOR
+	checkf(GeneratorsRunning.load() >= 0, TEXT("CPATH - Volume Tick:::Generators running was negative!!"));
+	checkf(GenerationFinishedSemaphore, TEXT("CPATH - Volume Tick:::GenerationFinishedSemaphore is invalid!!"));
+#endif
+
+	if (GeneratorsRunning.load() == 0)
+	{
+		if (GenerationFinishedSemaphore && PathfindersWaiting.load() > 0 && InitialGenerationFinished)
+		{
+			GenerationFinishedSemaphore->Trigger();
+		}
+	}
+
 }
 
 void ACPathVolume::BeginDestroy()
-{
+{	
+	//GEngine->AddOnScreenDebugMessage(-1, 50.f, FColor::Yellow, TEXT("VOLUME begin destroy!!!"));
 	Super::BeginDestroy();
-
-	GeneratorThreads.clear();
-	delete[] Octrees;
+	CoreInstance = nullptr;
 }
 
+bool ACPathVolume::IsReadyForFinishDestroy()
+{
+	// This is VERY unlikely to ever happen, but - if a pathfinder is searching for a path using this volume
+	// And GC happened to trigger right after destroying this volume
+	// Then we need to wait for this pathfinder to finish, cause it doesn't check
+	// For volume validity once it starts the actual search
+	bool IsReady = Super::IsReadyForFinishDestroy() && PathfindersRunning.load() <= 0;
+	return IsReady;
+}
 
-inline FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocation) const
+void ACPathVolume::FinishDestroy()
+{
+	// Deleting the graph
+	delete[] Octrees;
+
+	Super::FinishDestroy();
+}
+
+void ACPathVolume::EndPlay(EEndPlayReason::Type EndPlayReason)
+{
+	// Killing generation threads
+	// This can potentially hold the game thread for a few ms:
+	//  - when the thread is currently waiting for a pathfinder to finish
+	
+	// Although it's very unlikely to happen, a good practice of removing dynamic obstacles
+	// from this volume before destroying it would prevent this.
+	// (or avoiding FindPathAsync calls right before destroying)
+	// If you're not destroying this manyally, before unloading the level, then the 5ms thread hang won't really matter anyway
+	// So only worry about this if you're destroying volumes during the game
+
+	GeneratorThreads.clear();
+	GeneratorsRunning.store(0);
+	if (GenerationFinishedSemaphore)
+	{
+		GenerationFinishedSemaphore->Trigger();
+		FGenericPlatformProcess::ReturnSynchEventToPool(GenerationFinishedSemaphore);
+		GenerationFinishedSemaphore = nullptr;
+	}
+}
+
+bool ACPathVolume::FindPathAsync(UObject* CallingObject, const FName& InFunctionName, FVector Start, FVector End, uint32 SmoothingPasses, int32 UserData, float TimeLimit, bool RequestRawPath, bool RequestUserPath)
+{
+	FCPathRequest Request;
+	Request.OnPathFound.BindUFunction(CallingObject, InFunctionName);
+	Request.VolumeRef = this;
+	Request.Start = Start;
+	Request.End = End;
+	Request.SmoothingPasses = SmoothingPasses;
+	Request.UserData = UserData;
+	Request.TimeLimit = TimeLimit;
+	Request.RequestRawPath = RequestRawPath;
+	Request.RequestUserPath = RequestUserPath;
+
+	return FindPathAsync(Request);
+}
+
+bool ACPathVolume::FindPathAsync(FCPathRequest& Request)
+{
+	if (!CoreInstance)
+		return false;
+
+	CoreInstance->AssignAsyncRequest(Request);
+
+	return true;
+}
+
+FCPathResult ACPathVolume::FindPathSynchronous(FVector Start, FVector End, uint32 SmoothingPasses, int32 UserData, float TimeLimit, bool RequestRawPath, bool RequestUserPath)
+{
+	FCPathResult Result;
+	if (GeneratorsRunning.load() > 0)
+	{
+		Result.FailReason = VolumeNotGenerated;
+	}
+	else
+	{
+		CPathAStar::GetInstance(GetWorld())->FindPath(this, &Result, Start, End, SmoothingPasses, UserData, TimeLimit, RequestRawPath, RequestUserPath);
+	}
+	return Result;
+}
+
+void ACPathVolume::FindPathSynchronous(TEnumAsByte<BranchFailSuccessEnum>& Branches, TArray<FCPathNode>& Path, TEnumAsByte<ECPathfindingFailReason>& FailReason, FVector Start, FVector End, int SmoothingPasses, int UserData, float TimeLimit)
+{
+	FCPathResult Result = FindPathSynchronous(Start, End, SmoothingPasses, UserData, TimeLimit);
+	FailReason = Result.FailReason;
+	Path = Result.UserPath;
+	if (FailReason == None)
+		Branches = BranchFailSuccessEnum::Success;
+	else
+		Branches = BranchFailSuccessEnum::Failure;
+}
+
+FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocation) const
 {
 	FVector RelativePos = WorldLocation - StartPosition;
 	RelativePos = RelativePos / GetVoxelSizeByDepth(0);
@@ -316,13 +432,8 @@ inline FVector ACPathVolume::WorldLocationToLocalCoordsInt3(FVector WorldLocatio
 
 }
 
-inline int ACPathVolume::WorldLocationToIndex(FVector WorldLocation) const
-{
-	FVector XYZ = WorldLocationToLocalCoordsInt3(WorldLocation);
-	return LocalCoordsInt3ToIndex(XYZ);
-}
 
-inline bool ACPathVolume::IsInBounds(FVector XYZ) const
+bool ACPathVolume::IsInBounds(FVector XYZ) const
 {
 	if (XYZ.X < 0 || XYZ.X >= NodeCount[0])
 		return false;
@@ -336,129 +447,7 @@ inline bool ACPathVolume::IsInBounds(FVector XYZ) const
 	return true;
 }
 
-inline float ACPathVolume::LocalCoordsInt3ToIndex(FVector V) const
-{
-	return (V.X * (NodeCount[1] * NodeCount[2])) + (V.Y * NodeCount[2]) + V.Z;
-}
-
-inline float ACPathVolume::GetVoxelSizeByDepth(int Depth) const
-{
-#if WITH_EDITOR
-	checkf(Depth <= OctreeDepth, TEXT("CPATH - Graph Generation:::DEPTH was higher than OctreeDepth"));
-#endif
-
-	return LookupTable_VoxelSizeByDepth[Depth];
-}
-
-inline uint32 ACPathVolume::CreateTreeID(uint32 Index, uint32 Depth) const
-{
-#if WITH_EDITOR
-	checkf(Depth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-#endif		
-	Index |= Depth << DEPTH_0_BITS;
-
-	return Index;
-}
-
-inline uint32 ACPathVolume::ExtractOuterIndex(uint32 TreeID) const
-{
-	return TreeID & DEPTH_0_MASK;
-}
-
-inline void ACPathVolume::ReplaceDepth(uint32& TreeID, uint32 NewDepth)
-{
-#if WITH_EDITOR
-	checkf(NewDepth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-#endif
-
-	TreeID &= ~DEPTH_MASK;
-	TreeID |= NewDepth << DEPTH_0_BITS;
-}
-
-inline uint32 ACPathVolume::ExtractDepth(uint32 TreeID) const
-{
-	return (TreeID & DEPTH_MASK) >> DEPTH_0_BITS;
-}
-
-inline uint32 ACPathVolume::ExtractChildIndex(uint32 TreeID, uint32 Depth) const
-{
-#if WITH_EDITOR
-	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-#endif
-	uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
-	uint32 Mask = 0x00000007 << DepthOffset;
-
-	return (TreeID & Mask) >> DepthOffset;
-}
-
-inline void ACPathVolume::AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
-{
-#if WITH_EDITOR
-	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-	checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
-#endif
-
-	ChildIndex <<= (Depth - 1) * 3 + DEPTH_0_BITS + 2;
-
-	TreeID |= ChildIndex;
-}
-
-inline FVector ACPathVolume::WorldLocationFromTreeID(uint32 TreeID) const
-{
-	uint32 OuterIndex = ExtractOuterIndex(TreeID);
-	uint32 Depth = ExtractDepth(TreeID);
-
-	FVector CurrPosition = StartPosition + GetVoxelSizeByDepth(0) * LocalCoordsInt3FromOuterIndex(OuterIndex);
-
-	for (uint32 CurrDepth = 1; CurrDepth <= Depth; CurrDepth++)
-	{
-		CurrPosition += GetVoxelSizeByDepth(CurrDepth) * 0.5f * LookupTable_ChildPositionOffsetMaskByIndex[ExtractChildIndex(TreeID, CurrDepth)];
-	}
-
-	return CurrPosition;
-}
-
-inline FVector ACPathVolume::LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const
-{
-	uint32 X = OuterIndex / (NodeCount[1] * NodeCount[2]);
-	OuterIndex -= X * NodeCount[1] * NodeCount[2];
-	return FVector(X, OuterIndex / NodeCount[2], OuterIndex % NodeCount[2]);
-}
-
-inline void ACPathVolume::ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
-{
-#if WITH_EDITOR
-	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-	checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
-#endif
-
-	uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
-
-	// Clearing previous child index
-	TreeID &= ~(0x00000007 << DepthOffset);
-
-	ChildIndex <<= DepthOffset;
-	TreeID |= ChildIndex;
-}
-
-inline void ACPathVolume::ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
-{
-#if WITH_EDITOR
-	checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
-	checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
-#endif
-
-	uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
-
-	// Clearing previous child index
-	TreeID &= ~(0x00000007 << DepthOffset);
-
-	ChildIndex <<= DepthOffset;
-	TreeID |= ChildIndex;
-	ReplaceDepth(TreeID, Depth);
-}
-
-inline void ACPathVolume::GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container)
+void ACPathVolume::GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container)
 {
 	uint32 Depth = 0;
 	CPathOctree* Tree = FindTreeByID(TreeID, Depth);
@@ -480,7 +469,7 @@ void ACPathVolume::GetAllSubtreesRec(uint32 TreeID, CPathOctree* Tree, std::vect
 	}
 }
 
-inline CPathOctree* ACPathVolume::FindTreeByID(uint32 TreeID)
+CPathOctree* ACPathVolume::FindTreeByID(uint32 TreeID)
 {
 	uint32 Depth = ExtractDepth(TreeID);
 	CPathOctree* CurrTree = &Octrees[ExtractOuterIndex(TreeID)];
@@ -529,7 +518,7 @@ CPathOctree* ACPathVolume::FindTreeByWorldLocation(FVector WorldLocation, uint32
 	return &Octrees[TreeID];
 }
 
-inline CPathOctree* ACPathVolume::FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree)
+CPathOctree* ACPathVolume::FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree)
 {
 	CPathOctree* CurrentTree = FindTreeByWorldLocation(WorldLocation, TreeID);
 	CPathOctree* FoundLeaf = nullptr;
@@ -714,28 +703,7 @@ CPathOctree* ACPathVolume::FindLeafRecursive(FVector RelativeLocation, uint32& T
 		ReplaceDepth(TreeID, CurrentDepth);
 		return ChildTree;
 	}
-
-	return nullptr;
 }
-
-FVector ACPathVolume::GetOuterTreeWorldLocation(uint32 TreeID) const
-{
-	FVector LocalCoords = LocalCoordsInt3FromOuterIndex(ExtractOuterIndex(TreeID));
-	LocalCoords *= GetVoxelSizeByDepth(0);
-	return StartPosition + LocalCoords;
-}
-
-inline CPathOctree* ACPathVolume::GetParentTree(uint32 TreeId)
-{
-	uint32 Depth = ExtractDepth(TreeId);
-	if (Depth)
-	{
-		ReplaceDepth(TreeId, Depth - 1);
-		return FindTreeByID(TreeId, Depth);
-	}
-	return nullptr;
-}
-
 
 
 CPathOctree* ACPathVolume::FindNeighbourByID(uint32 TreeID, ENeighbourDirection Direction, uint32& NeighbourID)
@@ -892,14 +860,87 @@ void ACPathVolume::FindLeafsOnSide(CPathOctree* Tree, uint32 TreeID, ENeighbourD
 
 
 
-inline uint32 ACPathVolume::GetFreeThreadID() const
+
+void ACPathVolume::PerformRandomBenchmark(uint32 FindPathUserData, float FindPathTimeLimit)
+{
+	if (IsAsyncBenchmark)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Async Benchmark started, duration: %f seconds."), BenchmarkDurationSeconds);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Benchmark started, duration: %f seconds. This window will be frozen until completion..."), BenchmarkDurationSeconds);
+	}
+
+	// Box for random start and end points
+	FBox Box = FBox::BuildAABB(GetActorLocation(), VolumeBox->GetScaledBoxExtent());
+	CPathAStar AStar;
+
+	int ResultCounter[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	double TotalPathLength = 0;
+	double TotalSuccesfulSearchDuration = 0;
+	double FailedRequestsDuration = 0;
+
+	// Performing find path searches 
+	auto StartTime = TIMENOW;
+	while (TIMEDIFF(StartTime, TIMENOW) < BenchmarkDurationSeconds * 1000)
+	{
+		FVector PathStart = FMath::RandPointInBox(Box);
+		FVector PathEnd = FMath::RandPointInBox(Box);
+
+		FCPathResult Result = FindPathSynchronous(PathStart, PathEnd, 0, FindPathUserData, FindPathTimeLimit);
+
+		ResultCounter[Result.FailReason]++;
+		if (Result.FailReason == ECPathfindingFailReason::None)
+		{
+			TotalPathLength += Result.RawPathLength;
+			TotalSuccesfulSearchDuration += Result.SearchDuration;
+		}
+		else
+		{
+			FailedRequestsDuration += Result.SearchDuration;
+		}
+	}
+	int VolumeInvalid = ResultCounter[VolumeNotValid] + ResultCounter[VolumeNotGenerated];
+	int WrongLocation = ResultCounter[WrongStartLocation] + ResultCounter[WrongEndLocation];
+	int RecommendedSampleSize = NodeCount[0] * NodeCount[1] * NodeCount[2] / 2 * FMath::Pow(8.0f, (float)FMath::Max(OctreeDepth - 2, -1));
+
+
+	UE_LOG(LogTemp, Warning, TEXT("Benchmark finished."));
+	if (RecommendedSampleSize > ResultCounter[0])
+		UE_LOG(LogTemp, Warning, TEXT("WARNING: Not enough succesful searches for reliable result. Recommended sample size: %d, received: %d"), RecommendedSampleSize, ResultCounter[0]);
+
+
+	// Logging result to the editor
+	UE_LOG(LogTemp, Warning, TEXT("SCORE = %f, Successes = %d, Overtimes = %d, WrongLocation = %d, distance = %f, SuccessTime = %f, FailedTime = %f, Unreachable = %d, UnknownError = %d, VolumeInvalid = %d"),
+		(float)(TotalPathLength / TotalSuccesfulSearchDuration / (double)VoxelSize), ResultCounter[0], ResultCounter[Timeout], WrongLocation, TotalPathLength, TotalSuccesfulSearchDuration / 1000.f, FailedRequestsDuration / 1000.f,
+		ResultCounter[EndLocationUnreachable], ResultCounter[Unknown], VolumeInvalid);
+
+
+	//Saving result to a file
+	FString FilePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()) + TEXT("/BenchmarkResults.csv");
+	FString BenchmarkResult = FString::Printf(TEXT("\n%s,%s,%f,%d,%d,%d,%d,%d,%d,%f,%f,%f,%f,%f,%d,%f,%f,%d,%d,%d,%f,%d,%d"),
+		*BenchmarkName, *GetWorld()->GetMapName(), (float)(TotalPathLength / TotalSuccesfulSearchDuration / (double)VoxelSize), ResultCounter[0], VolumeInvalid, ResultCounter[Timeout], WrongLocation, ResultCounter[EndLocationUnreachable],
+		ResultCounter[Unknown], BenchmarkDurationSeconds, TotalSuccesfulSearchDuration / 1000.f, FailedRequestsDuration / 1000.f, TotalPathLength, VoxelSize, OctreeDepth, AgentRadius, AgentHalfHeight, BenchmarkFindPathUserData, TotalNodeCount, IsAsyncBenchmark, DynamicObstaclesUpdateRate, MaxGenerationThreads, RecommendedSampleSize);
+
+
+	if (!FPaths::FileExists(FilePath))
+	{
+		FString BenchmarkFileStart = TEXT("benchmark_name,map_name,score,success,invalid_volume,timeout,wrong_location,unreachable,unknown_error,benchmark_duration,success_duration,failed_duration,success_paths_distance,voxel_size,octree_depth,agent_radius,agent_half_height,find_path_user_data,graph_node_count,is_async,dynamic_update_rate,worker_threads,min_recommended_success");
+		FFileHelper::SaveStringToFile(BenchmarkFileStart, *FilePath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), EFileWrite::FILEWRITE_Append);
+	}
+
+	if (RecommendedSampleSize < ResultCounter[0] || SaveBenchmarksWithUnreliableResults)
+		FFileHelper::SaveStringToFile(BenchmarkResult, *FilePath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get(), EFileWrite::FILEWRITE_Append);
+}
+
+uint32 ACPathVolume::GetFreeThreadID() const
 {
 	for (int ID = 0; ID < 64; ID++)
 	{
 		if (!ThreadIDs[ID])
 			return ID;
 	}
-
 	// This will never return as max number of generation threads is always less than 64
 	return 0;
 }
@@ -908,9 +949,9 @@ void ACPathVolume::CleanFinishedGenerators()
 {
 	for (auto Generator = GeneratorThreads.begin(); Generator != GeneratorThreads.end(); Generator++)
 	{
-		ThreadIDs[(*Generator)->GenThreadID] = false;
-		if (!(*Generator)->ThreadRef)
+		if ((*Generator)->HasFinishedWorking())
 		{
+			ThreadIDs[(*Generator)->GenThreadID] = false;
 			Generator = GeneratorThreads.erase(Generator);
 		}
 	}
@@ -940,6 +981,14 @@ void ACPathVolume::InitialGenerationUpdate()
 
 		CleanFinishedGenerators();
 		GetWorld()->GetTimerManager().ClearTimer(GenerationTimerHandle);
+
+		// Run benchmark before modifying the graph
+		if (PerformBenchmarkAfterGeneration)
+		{
+			PerformRandomBenchmark(BenchmarkFindPathUserData, BenchmarkFindPathTimeLimit);
+		}
+
+
 		if (DynamicObstaclesUpdateRate > 0)
 			GetWorld()->GetTimerManager().SetTimer(GenerationTimerHandle, this, &ACPathVolume::GenerationUpdate, 1.f / DynamicObstaclesUpdateRate, true);
 	}
@@ -1004,8 +1053,7 @@ void ACPathVolume::GenerationUpdate()
 					LastIndex += TreesToRegenerate.size() % ThreadCount;
 
 				int ThreadID = GetFreeThreadID();
-				FString ThreadName = "CPathGenerator Dynamic, ID: ";
-				ThreadName.AppendInt(ThreadID);
+				FString ThreadName = FCPathAsyncVolumeGenerator::GetNameFromID(ThreadID);
 				GeneratorThreads.push_back(std::make_unique<FCPathAsyncVolumeGenerator>(this, NodesPerThread * CurrentThread, LastIndex, ThreadID, ThreadName, true));
 				GeneratorThreads.back()->ThreadRef = FRunnableThread::Create(GeneratorThreads.back().get(), *ThreadName);
 				if (GeneratorThreads.back()->ThreadRef)
@@ -1051,34 +1099,33 @@ bool ACPathVolume::RecheckOctreeAtDepth(CPathOctree* OctreeRef, FVector TreeLoca
 
 const FVector ACPathVolume::LookupTable_ChildPositionOffsetMaskByIndex[8] = {
 	{-1, -1, -1},
-	{-1, 1, -1},
-	{-1, -1, 1},
-	{-1, 1, 1},
+	{-1,  1, -1},
+	{-1, -1,  1},
+	{-1,  1,  1},
 
 	{1, -1, -1},
-	{1, 1, -1},
-	{1, -1, 1},
-	{1, 1, 1}
+	{1,  1, -1},
+	{1, -1,  1},
+	{1,  1,  1}
 };
 
-
 const FVector ACPathVolume::LookupTable_NeighbourOffsetByDirection[6] = {
-	{0, -1, 0},
-	{-1, 0, 0},
-	{0, 1, 0},
-	{1, 0, 0},
-	{0, 0, -1},
-	{0, 0, 1} };
+	{ 0, -1,  0},
+	{-1,  0,  0},
+	{ 0,  1,  0},
+	{ 1,  0,  0},
+	{ 0,  0, -1},
+	{ 0,  0,  1}};
 
 const int8 ACPathVolume::LookupTable_NeighbourChildIndex[8][6] = {
-	{-2, -5, 1, 4, -3, 2},
-	{0, -6, -1, 5, -4, 3},
-	{-4, -7, 3, 6, 0, -1},
-	{2, -8, -3, 7, 1, -2},
-	{-6, 0, 5, -1, -7, 6},
-	{4, 1, -5, -2, -8, 7},
-	{-8, 2, 7, -3, 4, -5},
-	{6, 3, -7, -4, 5, -6},
+	{-2, -5,  1,  4, -3,  2},
+	{ 0, -6, -1,  5, -4,  3},
+	{-4, -7,  3,  6,  0, -1},
+	{ 2, -8, -3,  7,  1, -2},
+	{-6,  0,  5, -1, -7,  6},
+	{ 4,  1, -5, -2, -8,  7},
+	{-8,  2,  7, -3,  4, -5},
+	{ 6,  3, -7, -4,  5, -6},
 };
 
 const int8 ACPathVolume::LookupTable_ChildrenOnSide[6][4] = {

@@ -22,13 +22,13 @@ public:
 	uint32 Data = 0;
 
 
-	inline void SetIsFree(bool IsFree)
+	FORCEINLINE void SetIsFree(bool IsFree)
 	{
 		Data &= 0xFFFFFFFE;
 		Data |= (uint32)IsFree;
 	}
 
-	inline bool GetIsFree() const
+	FORCEINLINE bool GetIsFree() const
 	{
 		return Data << 31;
 	}

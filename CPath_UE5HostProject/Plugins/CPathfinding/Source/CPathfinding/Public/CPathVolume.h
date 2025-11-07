@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "HAL/Event.h"
 #include "WorldCollision.h"
 #include <memory>
 #include <chrono>
@@ -17,20 +18,54 @@
 #include "CPathAsyncVolumeGeneration.h"
 #include "CPathVolume.generated.h"
 
+class ACPathCore;
 
 UCLASS()
 class CPATHFINDING_API ACPathVolume : public AActor
 {
 	GENERATED_BODY()
 
-		friend class FCPathAsyncVolumeGenerator;
+	friend class FCPathAsyncVolumeGenerator;
 	friend class UCPathDynamicObstacle;
 public:
 	ACPathVolume();
 
 	virtual void Tick(float DeltaTime) override;
 
-	virtual void BeginDestroy() override;
+	// This is the method to find get a path in c++, asynchronously. 
+	// Example function you can provide: void OnPathFound(FCPathResult& PathResult);
+	// You can get the function name via macro: GET_FUNCTION_NAME_CHECKED(YourUObjectType, OnPathFound);
+	// Returns false if FindPath request wasn't made (happens if somehow called before begin play or if one of the volumes has been destroyed)
+	bool FindPathAsync(UObject* CallingObject, const FName& InFunctionName,
+		FVector Start, FVector End,
+		uint32 SmoothingPasses = 2, int32 UserData = 0, float TimeLimit = 0.15f,
+		bool RequestRawPath = false, bool RequestUserPath = true);
+
+	// Same as above, just using the FCPathRequest structure to pass parameters
+	bool FindPathAsync(FCPathRequest& Request);
+
+	// This searches for a path on this thread, so the result is available here and now.
+	// Increase TimeLimit at your own risk. 
+	// Default time of 2ms means that in the worst case scenatio, this call will increse your frametime by 2ms!
+	// Use this only for small graphs or very short paths (for example, <=1000 node graph)
+	// Whenever possible, use FindPathAsync instead
+	// IMPORTANT: When using with dynamic obstacles, this might fail with reason GraphNotGenerated while the graph is being updated!
+	FCPathResult FindPathSynchronous(FVector Start, FVector End,
+		uint32 SmoothingPasses = 2, int32 UserData = 0, float TimeLimit = 0.002f,
+		bool RequestRawPath = false, bool RequestUserPath = true);
+
+
+	// Blueprint exposed version
+	// This searches for a path on this thread, so the result is available here and now.
+	// Increase TimeLimit at your own risk. 
+	// Default time of 2ms means that in the worst case scenatio, this call will increse your frametime by 2ms!
+	// Use this only for small graphs or very short paths (for example, <=1000 node graph)
+	// Whenever possible, use FindPathAsync instead
+	// IMPORTANT: When using with dynamic obstacles, this might fail with reason GraphNotGenerated while the graph is being updated!
+	UFUNCTION(BlueprintCallable, Category = "CPath", Meta = (ExpandEnumAsExecs = "Branches"))
+		void FindPathSynchronous(TEnumAsByte<BranchFailSuccessEnum>& Branches, TArray<FCPathNode>& Path, TEnumAsByte<ECPathfindingFailReason>& FailReason,
+			 FVector Start, FVector End, int SmoothingPasses = 2,
+			int UserData = 0, float TimeLimit = 0.002f);
 
 
 	// ------- EXTENDABLE ------
@@ -150,19 +185,59 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "CPath|Info")
 		bool InitialGenerationFinished = false;
 
+	// WARNING: This will freeze the game for the benchmark duration!
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		bool PerformBenchmarkAfterGeneration = false;
+
+	// Benchmark duration in seconds
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		float BenchmarkDurationSeconds = 20.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		int BenchmarkFindPathUserData = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		float BenchmarkFindPathTimeLimit = 0.1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		FString BenchmarkName = FString("DefaultName");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+		bool SaveBenchmarkResultToFile = true;
+
+	// if sample size of successful searches is too low, don't save the results to file
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark", meta = (EditCondition = "SaveBenchmarkResultToFile==true"))
+		bool SaveBenchmarksWithUnreliableResults = false;
+
+	// Not used for now, async benchmark does not provide reliable results
+	//UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "CPath|Benchmark")
+	bool IsAsyncBenchmark = false;
+
+
 	// Shapes to use when checking if voxel is free or not
 	std::vector<std::vector<FCollisionShape>> TraceShapesByDepth;
 
 	// Returns false if graph couldnt start generating
 	bool GenerateGraph();
 
+	// These are called by UE in this order
+	virtual void EndPlay(EEndPlayReason::Type EndPlayReason) override;
+	virtual void BeginDestroy() override;
+	virtual bool IsReadyForFinishDestroy() override;
+	virtual void FinishDestroy() override;
+
 protected:
 
 	virtual void BeginPlay() override;
 
+	// The Octree data
 	CPathOctree* Octrees = nullptr;
 
-
+	// This is for find path requests, shouldn't be accessed directly unless you know what you're doing
+	// UPROPERTY() is here so that UE's garabge collector doesn't randomly
+	// decide that this is useless and destroy it -_-
+	UPROPERTY()
+	ACPathCore* CoreInstance = nullptr;
 public:
 
 	// Location of the first voxel, set during graph generation
@@ -176,13 +251,13 @@ public:
 	// Returns the child with this tree id, or his parent at DepthReached in case the child doesnt exist
 	CPathOctree* FindTreeByID(uint32 TreeID, uint32& DepthReached);
 
-	inline CPathOctree* FindTreeByID(uint32 TreeID);
+	CPathOctree* FindTreeByID(uint32 TreeID);
 
 	// Returns a tree and its TreeID by world location, returns null if location outside of volume. Only for Outer index
 	CPathOctree* FindTreeByWorldLocation(FVector WorldLocation, uint32& TreeID);
 
 	// Returns a leaf and its TreeID by world location, returns null if location outside of volume. 
-	inline CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
+	CPathOctree* FindLeafByWorldLocation(FVector WorldLocation, uint32& TreeID, bool MustBeFree = 1);
 
 	// Returns a free leaf and its TreeID by world location, as long as it exists in provided search range and WorldLocation is in this Volume
 	// If SearchRange <= 0, it uses a default dynamic search range
@@ -199,36 +274,113 @@ public:
 	std::vector<CPathAStarNode> FindFreeNeighbourLeafs(CPathAStarNode& Node);
 
 	// Returns a parent of tree with given TreeID or null if TreeID has depth of 0
-	inline CPathOctree* GetParentTree(uint32 TreeId);
+	FORCEINLINE CPathOctree* GetParentTree(uint32 TreeId)
+	{
+		uint32 Depth = ExtractDepth(TreeId);
+		if (Depth)
+		{
+			ReplaceDepth(TreeId, Depth - 1);
+			return FindTreeByID(TreeId, Depth);
+		}
+		return nullptr;
+	};
 
 	// Returns world location of a voxel at this TreeID. This returns CENTER of the voxel
-	inline FVector WorldLocationFromTreeID(uint32 TreeID) const;
+	FORCEINLINE FVector WorldLocationFromTreeID(uint32 TreeID) const
+	{
+		uint32 OuterIndex = ExtractOuterIndex(TreeID);
+		uint32 Depth = ExtractDepth(TreeID);
 
-	inline FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const;
+		FVector CurrPosition = StartPosition + GetVoxelSizeByDepth(0) * LocalCoordsInt3FromOuterIndex(OuterIndex);
+
+		for (uint32 CurrDepth = 1; CurrDepth <= Depth; CurrDepth++)
+		{
+			CurrPosition += GetVoxelSizeByDepth(CurrDepth) * 0.5f * LookupTable_ChildPositionOffsetMaskByIndex[ExtractChildIndex(TreeID, CurrDepth)];
+		}
+
+		return CurrPosition;
+	}
+
+	FORCEINLINE FVector LocalCoordsInt3FromOuterIndex(uint32 OuterIndex) const
+	{
+		uint32 X = OuterIndex / (NodeCount[1] * NodeCount[2]);
+		OuterIndex -= X * NodeCount[1] * NodeCount[2];
+		return FVector(X, OuterIndex / NodeCount[2], OuterIndex % NodeCount[2]);
+	};
 
 	// Creates TreeID for AsyncOverlapByChannel
-	inline uint32 CreateTreeID(uint32 Index, uint32 Depth) const;
+	FORCEINLINE uint32 CreateTreeID(uint32 Index, uint32 Depth) const
+	{
+		checkf(Depth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		Index |= Depth << DEPTH_0_BITS;
+		return Index;
+	}
 
 	// Extracts Octrees array index from TreeID
-	inline uint32 ExtractOuterIndex(uint32 TreeID) const;
+	FORCEINLINE uint32 ExtractOuterIndex(uint32 TreeID) const
+	{
+		return TreeID & DEPTH_0_MASK;
+	}
 
 	// Replaces Depth in the TreeID with NewDepth
-	inline void ReplaceDepth(uint32& TreeID, uint32 NewDepth);
+	FORCEINLINE void ReplaceDepth(uint32& TreeID, uint32 NewDepth)
+	{
+		checkf(NewDepth <= MAX_DEPTH, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		TreeID &= ~DEPTH_MASK;
+		TreeID |= NewDepth << DEPTH_0_BITS;
+	}
 
 	// Extracts depth from TreeID
-	inline uint32 ExtractDepth(uint32 TreeID) const;
+	FORCEINLINE uint32 ExtractDepth(uint32 TreeID) const
+	{
+		return (TreeID & DEPTH_MASK) >> DEPTH_0_BITS;
+	}
 
 	// Returns a number from  0 to 7 - a child index at requested Depth
-	inline uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const;
+	FORCEINLINE uint32 ExtractChildIndex(uint32 TreeID, uint32 Depth) const
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+		uint32 Mask = 0x00000007 << DepthOffset;
+		return (TreeID & Mask) >> DepthOffset;
+	}
 
 	// This assumes that child index at Depth is 000, if its not use ReplaceChildIndex
-	inline void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void AddChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		ChildIndex <<= (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+		TreeID |= ChildIndex;
+	};
 
 	// Replaces child index at given depth
-	inline void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void ReplaceChildIndex(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+
+		// Clearing previous child index
+		TreeID &= ~(0x00000007 << DepthOffset);
+		ChildIndex <<= DepthOffset;
+		TreeID |= ChildIndex;
+	}
+
 
 	// Replaces child index at given depth and also replaces depth to the same one
-	inline void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex);
+	FORCEINLINE void ReplaceChildIndexAndDepth(uint32& TreeID, uint32 Depth, uint32 ChildIndex)
+	{
+		checkf(Depth <= MAX_DEPTH && Depth > 0, TEXT("CPATH - Graph Generation:::DEPTH can be up to MAX_DEPTH"));
+		checkf(ChildIndex < 8, TEXT("CPATH - Graph Generation:::Child Index can be up to 7"));
+		uint32 DepthOffset = (Depth - 1) * 3 + DEPTH_0_BITS + 2;
+
+		// Clearing previous child index
+		TreeID &= ~(0x00000007 << DepthOffset);
+		ChildIndex <<= DepthOffset;
+		TreeID |= ChildIndex;
+		ReplaceDepth(TreeID, Depth);
+	}
 
 	// Traverses the tree downwards and adds every tree to the container
 	void GetAllSubtrees(uint32 TreeID, std::vector<uint32>& Container);
@@ -236,8 +388,12 @@ public:
 	// Volume is not safe to access as long as this is not 0, pathfinders should wait till this is 0
 	std::atomic_int GeneratorsRunning = 0;
 
+	// Wake up call for pathfinding threads waiting for generation to finish
+	FEvent* GenerationFinishedSemaphore = nullptr;
+
 	// Volume wont start generating as long as this is not 0
 	std::atomic_int PathfindersRunning = 0;
+	std::atomic_int PathfindersWaiting = 0;
 
 	// This is for other threads to check if graph is accessible
 	std::atomic_bool InitialGenerationCompleteAtom = false;
@@ -247,7 +403,11 @@ public:
 
 	// ----------- Other helper functions ---------------------
 
-	inline float GetVoxelSizeByDepth(int Depth) const;
+	FORCEINLINE float GetVoxelSizeByDepth(int Depth) const
+	{
+		checkf(Depth <= OctreeDepth, TEXT("CPATH - Graph Generation:::DEPTH was higher than OctreeDepth"));
+		return LookupTable_VoxelSizeByDepth[Depth];
+	}
 
 	// Draws the voxel, this takes all the drawing options into condition. If Duraiton is below 0, it never disappears. 
 	// If Color = green, free trees are green and occupied are red.
@@ -255,23 +415,34 @@ public:
 	bool DrawDebugVoxel(uint32 TreeID, bool DrawIfNotLeaf = true, float Duration = 0, FColor Color = FColor::Green, CPathVoxelDrawData* OutDrawData = nullptr);
 	void DrawDebugVoxel(const CPathVoxelDrawData& DrawData, float Duration) const;
 
-
 protected:
 
 	// Returns an index in the Octree array from world position. NO BOUNDS CHECK
-	inline int WorldLocationToIndex(FVector WorldLocation) const;
+	FORCEINLINE int WorldLocationToIndex(FVector WorldLocation) const
+	{
+		FVector XYZ = WorldLocationToLocalCoordsInt3(WorldLocation);
+		return LocalCoordsInt3ToIndex(XYZ);
+	}
 
 	// Multiplies local integer coordinates into index
-	inline float LocalCoordsInt3ToIndex(FVector V) const;
+	FORCEINLINE float LocalCoordsInt3ToIndex(FVector V) const
+	{
+		return (V.X * (NodeCount[1] * NodeCount[2])) + (V.Y * NodeCount[2]) + V.Z;
+	}
 
 	// Returns the X Y and Z relative to StartPosition and divided by VoxelSize. Multiply them to get the index. NO BOUNDS CHECK
-	inline FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
+	FVector WorldLocationToLocalCoordsInt3(FVector WorldLocation) const;
 
 	// Returns world location of a tree at depth 0. Extracts only outer index from TreeID
-	inline FVector GetOuterTreeWorldLocation(uint32 TreeID) const;
+	FORCEINLINE FVector GetOuterTreeWorldLocation(uint32 TreeID) const
+	{
+		FVector LocalCoords = LocalCoordsInt3FromOuterIndex(ExtractOuterIndex(TreeID));
+		LocalCoords *= GetVoxelSizeByDepth(0);
+		return StartPosition + LocalCoords;
+	}
 
 	// takes in what `WorldLocationToLocalCoordsInt3` returns and performs a bounds check
-	inline bool IsInBounds(FVector LocalCoordsInt3) const;
+	bool IsInBounds(FVector LocalCoordsInt3) const;
 
 	// Helper function for 'FindLeafByWorldLocation'. Relative location is location relative to the middle of CurrentTree
 	CPathOctree* FindLeafRecursive(FVector RelativeLocation, uint32& TreeID, uint32 CurrentDepth, CPathOctree* CurrentTree);
@@ -314,8 +485,9 @@ protected:
 
 	bool ThreadIDs[64];
 
-	inline uint32 GetFreeThreadID() const;
+	uint32 GetFreeThreadID() const;
 
+	void PerformRandomBenchmark(uint32 UserData = 0, float TimeLimit = 0.2);
 
 	// ----- Lookup tables-------
 	static const FVector LookupTable_ChildPositionOffsetMaskByIndex[8];
